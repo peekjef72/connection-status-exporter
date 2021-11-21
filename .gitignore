@@ -13,3 +13,4 @@
 
 # Visual studio files
 *.code-workspace
+.vscode/

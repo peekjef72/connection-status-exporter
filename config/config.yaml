@@ -3,7 +3,12 @@ sockets:
     host: 127.0.0.1
     port: 80
     protocol: tcp
+    status: listen
   - name: hostname-https 
     host: 127.0.0.1
     port: 8080
-    timeout: 2
+  - name: ssh-from-localhost
+    srcHost: 127.0.0.1
+    destHost: 127.0.0.1
+    destPort: 22
+    status: established

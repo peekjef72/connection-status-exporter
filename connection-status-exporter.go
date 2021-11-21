@@ -15,30 +15,40 @@
 package main
 
 import (
-	"errors"
-	"flag"
-	"io/ioutil"
-	"log"
-	"net"
 	"net/http"
 	"os"
-	"strconv"
-	"sync"
-	"time"
 
+	// "strings"
+
+	"github.com/go-kit/kit/log/level"
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/prometheus/client_golang/prometheus/promhttp"
-	"gopkg.in/yaml.v2"
+	"github.com/prometheus/common/promlog"
+	"github.com/prometheus/common/promlog/flag"
+	"github.com/prometheus/common/version"
+	kingpin "gopkg.in/alecthomas/kingpin.v2"
 )
+
+// Branch is set during build to the git branch.
+var Branch string
+
+// BuildDate is set during build to the ISO-8601 date and time.
+var BuildDate string
+
+// Revision is set during build to the git commit revision.
+var Revision string
+
+// Version is set during build to the git describe version
+// (semantic version)-(commitish) form.
+var Version = "0.1.1"
+
+// VersionShort is set during build to the semantic version.
+var VersionShort = "0.1.1"
 
 const (
 
 	// Prefix for Prometheus metrics
 	namespace = "connection_status_up"
-
-	// Default values for optional parameters of socket
-	defaultTimeout         = 5
-	defaultProtocol string = "tcp"
 
 	// Constant values
 	connectionOk          = 1
@@ -47,178 +57,78 @@ const (
 )
 
 var (
-	logger     = log.New(os.Stderr, "", log.Lmicroseconds|log.Ltime|log.Lshortfile)
-	configFile = flag.String("config-file", "config/config.yaml", "Exporter configuration file.")
-	addr       = flag.String("listen-address", metricsPublishingPort, "The address to listen on for HTTP requests.")
+	listenAddress = kingpin.Flag("web.listen-address", "The address to listen on for HTTP requests.").Default(metricsPublishingPort).String()
+	metricsPath   = kingpin.Flag("web.telemetry-path", "Path under which to expose collector's internal metrics.").Default("/metrics").String()
+	configFile    = kingpin.Flag("config-file", "Exporter configuration file.").Default("config/config.yaml").String()
+
+//	exportPath       = kingpin.Flag("web.export-path", "Path under which to expose targets' metrics.").Default("/export").String()
 )
 
-type socketSet struct {
-	Sockets []socket `yalm:"sockets"`
+//***********************************************************************************************
+func handler(w http.ResponseWriter, r *http.Request, exporter *SocketSetExporter) {
+	registry := prometheus.NewRegistry()
+	registry.MustRegister(exporter)
+	h := promhttp.HandlerFor(registry, promhttp.HandlerOpts{})
+	h.ServeHTTP(w, r)
 }
 
-type socket struct {
-	Name     string `yaml:"name"`
-	Host     string `yaml:"host"`
-	Port     int    `yaml:"port"`
-	Protocol string `yaml:"protocol"`
-	Timeout  int    `yalm:"timeout"`
-}
-
-// SocketSetExporter Exporter of the status of connection
-type SocketSetExporter struct {
-	socketStatusMetrics *prometheus.GaugeVec
-	mutex               sync.Mutex
-	sockets             *socketSet
-}
-
-// NewSocketSetExporter Creator of SocketSetExporter
-func NewSocketSetExporter(configFile string) *SocketSetExporter {
-	yalmFile, err := ioutil.ReadFile(configFile)
-	if err != nil {
-		logger.Fatalf("Error while reading configuration file: &%s", err)
-	}
-
-	socketSet := socketSet{}
-	err = yaml.Unmarshal(yalmFile, &socketSet)
-	if err != nil {
-		logger.Fatalf("Error parsing config file: %s", err)
-	}
-
-	err = socketSet.check()
-	if err != nil {
-		logger.Fatalf("Error in the configuration of the sockets: %s", err)
-	}
-
-	return &SocketSetExporter{
-		socketStatusMetrics: prometheus.NewGaugeVec(
-			prometheus.GaugeOpts{
-				Name: namespace,
-				Help: "Connection status of the socket.",
-			}, []string{"name", "host", "port", "protocol"}),
-		sockets: &socketSet,
-	}
-}
-
-// Describe Implements interface
-func (exporter *SocketSetExporter) Describe(prometheusChannel chan<- *prometheus.Desc) {
-	exporter.socketStatusMetrics.Describe(prometheusChannel)
-	return
-}
-
-// Collect Implements interface
-func (exporter *SocketSetExporter) Collect(prometheusChannel chan<- prometheus.Metric) {
-	exporter.mutex.Lock()
-	defer exporter.mutex.Unlock()
-	exporter.sockets.collect(exporter.socketStatusMetrics)
-	exporter.socketStatusMetrics.Collect(prometheusChannel)
-	return
-}
-
-// Calls the method collect of each socket in the socketSet
-func (thisSocketSet *socketSet) collect(prometheusGaugeVector *prometheus.GaugeVec) {
-	for _, currentSocket := range thisSocketSet.Sockets {
-		currentSocket.collect(prometheusGaugeVector)
-	}
-	return
-}
-
-// Checks the status of the connection of a socket and updates it in the Metric
-func (thisSocket *socket) collect(prometheusGaugeVector *prometheus.GaugeVec) {
-	connectionStatus := connectionOk
-	connectionAdress := thisSocket.Host + ":" + strconv.Itoa(thisSocket.Port)
-	connectionTimeout := time.Duration(thisSocket.Timeout * 1000000000)
-
-	// Create a connection to test the socket
-	connection, err := net.DialTimeout(
-		thisSocket.Protocol,
-		connectionAdress,
-		connectionTimeout)
-
-	// If the socket cannot be opened, set the status to error
-	if err != nil {
-		connectionStatus = connectionErr
-	}
-
-	// Updated the status of the socket in the metric
-	prometheusGaugeVector.WithLabelValues(
-		thisSocket.Name,
-		thisSocket.Host,
-		strconv.Itoa(thisSocket.Port),
-		thisSocket.Protocol).Set(float64(connectionStatus))
-
-	// If the socket was open correctly, close it
-	if connectionStatus == connectionOk {
-		err = connection.Close()
-		if err != nil {
-			logger.Printf("Error closing the socket")
-		}
-	}
-	return
-}
-
-// check the sanity of the sockets in the set
-func (thisSocketSet *socketSet) check() error {
-	for index := range thisSocketSet.Sockets {
-		err := thisSocketSet.Sockets[index].check()
-		if err != nil {
-			return (err)
-		}
-	}
-	return (nil)
-}
-
-// Check the sanity of the socket and fills the default values
-func (thisSocket *socket) check() error {
-	if thisSocket.Name == "" {
-		return (errors.New("All sockets must have the field name completed"))
-	}
-	if thisSocket.Name == "" {
-		return (errors.New("All sockets must have the fiels host completed"))
-	}
-	if thisSocket.Port == 0 {
-		return (errors.New("All sockets must have the field port completed"))
-	}
-	if thisSocket.Protocol == "" {
-		thisSocket.Protocol = defaultProtocol
-	}
-	// Check if the protocol is among the valid ones
-	if IsValidProtocol(thisSocket.Protocol) == false {
-		return (errors.New("The protocol of the socket is not a valid one"))
-	}
-	if thisSocket.Timeout == 0 {
-		thisSocket.Timeout = defaultTimeout
-	}
-	return (nil)
-}
-
-// IsValidProtocol Check if a string is among the valid protocols
-func IsValidProtocol(protocol string) bool {
-	switch protocol {
-	case
-		"tcp",
-		"tcp4",
-		"tcp6",
-		"udp",
-		"udp4",
-		"udp6",
-		"ip",
-		"ip4",
-		"ip6",
-		"unix",
-		"unixgram",
-		"unixpacket":
-		return true
-	}
-	return false
-}
-
+//***********************************************************************************************
 func main() {
-	flag.Parse()
-	exporter := NewSocketSetExporter(*configFile)
-	prometheus.MustRegister(exporter)
-	logger.Print("Socket exporter initialized.")
+	var sockets *socketSet
+	var err error
 
-	// Expose the registered metrics via HTTP.
-	http.Handle("/metrics", promhttp.Handler())
-	log.Fatal(http.ListenAndServe(*addr, nil))
+	logConfig := promlog.Config{}
+	flag.AddFlags(kingpin.CommandLine, &logConfig)
+	kingpin.Version(version.Print("nrpe_exporter"))
+	kingpin.HelpFlag.Short('h')
+	kingpin.Parse()
+
+	// Setup build info metric.
+	version.Branch = Branch
+	version.BuildDate = BuildDate
+	version.Revision = Revision
+	version.Version = VersionShort
+
+	logger := promlog.New(&logConfig)
+	level.Info(logger).Log("msg", "Starting connection-status-exporter", "version", version.Info())
+	level.Info(logger).Log("msg", "Build context", "build_context", version.BuildContext())
+
+	// read the configuration if not empty
+	if *configFile != "" {
+		sockets, err = Load(*configFile)
+		if err != nil {
+			level.Error(logger).Log("Errmsg", "Error loading config", "err", err)
+			os.Exit(1)
+		}
+	}
+	// create a new exporter
+	sockExporter := NewSocketSetExporter(sockets, logger)
+	//	prometheus.MustRegister(sockExporter)
+	level.Info(logger).Log("msg", "Connection Status Exporter initialized")
+
+	var landingPage = []byte(`<html>
+		<head>
+		<title>Connection Status Exporter</title>
+		</head>
+		<body>
+		<h1>Connection Status Exporter</h1>
+			<p><a href="` + *metricsPath + `">Metrics</a></p>
+		</body>
+		</html>
+	`)
+
+	http.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/html; charset=UTF-8") // nolint: errcheck
+		w.Write(landingPage)                                       // nolint: errcheck
+	})
+
+	http.HandleFunc(*metricsPath, func(w http.ResponseWriter, r *http.Request) {
+		handler(w, r, sockExporter)
+	})
+
+	level.Info(logger).Log("msg", "Listening on address", "address", *listenAddress)
+	if err := http.ListenAndServe(*listenAddress, nil); err != nil {
+		level.Error(logger).Log("msg", "Error starting HTTP server")
+		os.Exit(1)
+	}
 }
