@@ -22,7 +22,7 @@ DOCKER_IMAGE_NAME   ?= sql-exporter
 DOCKER_IMAGE_TAG    ?= $(subst /,-,$(shell git rev-parse --abbrev-ref HEAD))
 
 
-all: format build test
+all: build
 
 style:
 	@echo ">> checking code style"

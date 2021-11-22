@@ -79,15 +79,15 @@ func main() {
 
 	logConfig := promlog.Config{}
 	flag.AddFlags(kingpin.CommandLine, &logConfig)
-	kingpin.Version(version.Print("nrpe_exporter"))
+	kingpin.Version(version.Print("connection-status-exporter"))
 	kingpin.HelpFlag.Short('h')
 	kingpin.Parse()
 
 	// Setup build info metric.
-	version.Branch = Branch
-	version.BuildDate = BuildDate
-	version.Revision = Revision
-	version.Version = VersionShort
+	// version.Branch = Branch
+	// version.BuildDate = BuildDate
+	// version.Revision = Revision
+	// version.Version = VersionShort
 
 	logger := promlog.New(&logConfig)
 	level.Info(logger).Log("msg", "Starting connection-status-exporter", "version", version.Info())

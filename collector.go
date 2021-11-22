@@ -2,6 +2,7 @@ package main
 
 import (
 	"fmt"
+	"strings"
 
 	"strconv"
 
@@ -53,45 +54,96 @@ func (exporter *SocketSetExporter) Collect(prometheusChannel chan<- prometheus.M
 
 // Calls the method collect of each socket in the socketSet
 func (thisSocketSet *socketSet) collect(exporter *SocketSetExporter) {
-	if len(thisSocketSet.tcpSockets) > 0 {
-		entries, err := netstat.TCPSocks(netstat.NoopFilter)
+
+	for proto, sockets := range thisSocketSet.socksByType {
+		var fn func(accept netstat.AcceptFn) ([]netstat.SockTabEntry, error)
+		if proto == "tcp" {
+			fn = netstat.TCPSocks
+		} else if proto == "udp" {
+			fn = netstat.UDPSocks
+		} else if proto == "tcp6" {
+			fn = netstat.TCP6Socks
+		} else if proto == "udp6" {
+			fn = netstat.UDP6Socks
+		}
+		entries, err := fn(netstat.NoopFilter)
+
 		if err != nil {
 			level.Error(exporter.logger).Log("msg", fmt.Sprintf("%+v", err))
 		}
 
-		for _, currentSocket := range thisSocketSet.tcpSockets {
-			currentSocket.collect(exporter, entries)
-		}
-	}
-	if len(thisSocketSet.udpSockets) > 0 {
-		entries, err := netstat.UDPSocks(netstat.NoopFilter)
-		if err != nil {
-			level.Error(exporter.logger).Log("msg", fmt.Sprintf("%+v", err))
+		for _, currentSocket := range sockets {
+			currentSocket.collect(exporter, entries, proto)
 		}
 
-		for _, currentSocket := range thisSocketSet.udpSockets {
-			currentSocket.collect(exporter, entries)
-		}
 	}
+	// if len(thisSocketSet.tcpSockets) > 0 {
+	// 	entries, err := netstat.TCPSocks(netstat.NoopFilter)
+	// 	if err != nil {
+	// 		level.Error(exporter.logger).Log("msg", fmt.Sprintf("%+v", err))
+	// 	}
+
+	// 	for _, currentSocket := range thisSocketSet.tcpSockets {
+	// 		currentSocket.collect(exporter, entries)
+	// 	}
+	// }
+	// if len(thisSocketSet.udpSockets) > 0 {
+	// 	entries, err := netstat.UDPSocks(netstat.NoopFilter)
+	// 	if err != nil {
+	// 		level.Error(exporter.logger).Log("msg", fmt.Sprintf("%+v", err))
+	// 	}
+
+	// 	for _, currentSocket := range thisSocketSet.udpSockets {
+	// 		currentSocket.collect(exporter, entries)
+	// 	}
+	// }
 	return
 }
 
 // Checks the status of the connection of a socket and updates it in the Metric
-func (thisSocket *socket) collect(exporter *SocketSetExporter, entries []netstat.SockTabEntry) {
-	connectionStatus := connectionErr
+func (thisSocket *socket) collect(exporter *SocketSetExporter, entries []netstat.SockTabEntry, proto string) {
+	connectionCount := 0
 
 	for _, entry := range entries {
+		level.Debug(exporter.logger).Log("socket", fmt.Sprintf("%+v", entry))
+		level.Debug(exporter.logger).Log("addr", fmt.Sprintf("%s", entry.LocalAddr.IP.String()))
 		if thisSocket.Status == "listen" && entry.State != netstat.Listen {
 			continue
 		}
 		if thisSocket.Status == "established" && entry.State != netstat.Established {
 			continue
 		}
-		if thisSocket.SrcHost != "" && thisSocket.SrcHost != entry.LocalAddr.IP.String() {
-			continue
+		if thisSocket.SrcHost != "" {
+			if strings.EqualFold(thisSocket.SrcHost, "any") {
+				if proto == "tcp6" || proto == "udp6" {
+					if entry.LocalAddr.IP.String() != "::" {
+						continue
+					}
+				} else {
+					if entry.LocalAddr.IP.String() != "0.0.0.0" {
+						continue
+					}
+
+				}
+			} else if thisSocket.SrcHost != entry.LocalAddr.IP.String() {
+				continue
+			}
 		}
-		if thisSocket.DestHost != "" && thisSocket.DestHost != entry.RemoteAddr.IP.String() {
-			continue
+		if thisSocket.DestHost != "" {
+			if strings.EqualFold(thisSocket.DestHost, "any") {
+				if proto == "tcp6" || proto == "udp6" {
+					if entry.RemoteAddr.IP.String() != "::" {
+						continue
+					}
+				} else {
+					if entry.RemoteAddr.IP.String() != "0.0.0.0" {
+						continue
+					}
+
+				}
+			} else if thisSocket.DestHost != entry.RemoteAddr.IP.String() {
+				continue
+			}
 		}
 		if thisSocket.SrcPort != 0 && thisSocket.SrcPort != entry.LocalAddr.Port {
 			continue
@@ -99,9 +151,8 @@ func (thisSocket *socket) collect(exporter *SocketSetExporter, entries []netstat
 		if thisSocket.DestPort != 0 && thisSocket.DestPort != entry.RemoteAddr.Port {
 			continue
 		}
-		connectionStatus = connectionOk
-		level.Debug(exporter.logger).Log("socket:", fmt.Sprintf("%+v", entry))
-		break
+		connectionCount++
+		// break
 	}
 	labels := make([]string, 7)
 	labels[0] = thisSocket.Name
@@ -130,7 +181,7 @@ func (thisSocket *socket) collect(exporter *SocketSetExporter, entries []netstat
 	level.Debug(exporter.logger).Log("labels:", fmt.Sprintf("%+q", labels))
 
 	// Updated the status of the socket in the metric
-	exporter.socketStatusMetrics.WithLabelValues(labels[:]...).Set(float64(connectionStatus))
+	exporter.socketStatusMetrics.WithLabelValues(labels[:]...).Set(float64(connectionCount))
 	// thisSocket.Name,
 	// thisSocket.Host,
 	// strconv.Itoa(thisSocket.Port),

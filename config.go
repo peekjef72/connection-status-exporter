@@ -14,19 +14,19 @@ type socketSet struct {
 	// Catches all undefined fields and must be empty after parsing.
 	XXX map[string]interface{} `yaml:",inline" json:"-"`
 
-	tcpSockets []socket
-	udpSockets []socket
+	socksByType map[string][]socket
 }
 
 type socket struct {
-	Name     string `yaml:"name"`
-	Host     string `yaml:"host,omitempty"`
-	SrcHost  string `yaml:"srcHost,omitempty"`
-	DestHost string `yaml:"destHost,omitempty"`
-	Port     uint16 `yaml:"port,omitempty"`
-	SrcPort  uint16 `yaml:"srcPort,omitempty"`
-	DestPort uint16 `yaml:"destPort,omitempty"`
-	Protocol string `yaml:"protocol,omitempty"`
+	Name        string `yaml:"name"`
+	Host        string `yaml:"host,omitempty"`
+	SrcHost     string `yaml:"srcHost,omitempty"`
+	DestHost    string `yaml:"destHost,omitempty"`
+	Port        uint16 `yaml:"port,omitempty"`
+	SrcPort     uint16 `yaml:"srcPort,omitempty"`
+	DestPort    uint16 `yaml:"destPort,omitempty"`
+	Protocol    string `yaml:"protocol,omitempty"`
+	ProcessName string `yaml:"process,omitempty"`
 
 	Status string `yaml:"status,omitempty"`
 }
@@ -65,8 +65,14 @@ func Load(configFile string) (*socketSet, error) {
 		return nil, err
 	}
 
-	sockets.tcpSockets = sockets.getSocketProtocol("tcp")
-	sockets.udpSockets = sockets.getSocketProtocol("udp")
+	sockets.socksByType = make(map[string][]socket)
+
+	for _, proto := range []string{"tcp", "udp", "tcp6", "udp6"} {
+		socks := sockets.getSocketProtocol(proto)
+		if len(socks) > 0 {
+			sockets.socksByType[proto] = socks
+		}
+	}
 
 	return &sockets, nil
 }
@@ -135,6 +141,9 @@ func (thisSocket *socket) check() error {
 
 	if thisSocket.SrcHost == "" {
 		thisSocket.SrcHost = thisSocket.Host
+	}
+	if strings.EqualFold(thisSocket.SrcHost, "any") {
+		thisSocket.SrcHost = "0.0.0.0"
 	}
 
 	if thisSocket.SrcPort == 0 {

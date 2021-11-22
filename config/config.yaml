@@ -1,12 +1,14 @@
 sockets:
-  - name: hostname-http
-    host: 127.0.0.1
-    port: 80
+  - name: hostname-ssh
+    host: 0.0.0.0
+    port: 22
     protocol: tcp
     status: listen
-  - name: hostname-https 
-    host: 127.0.0.1
-    port: 8080
+  - name: hostname-grafana 
+    srcHost: "::"
+    port: 3000
+    status: listen
+    protocol: tcp6
   - name: ssh-from-localhost
     srcHost: 127.0.0.1
     destHost: 127.0.0.1
