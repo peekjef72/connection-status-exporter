@@ -3,6 +3,7 @@ package main
 import (
 	"fmt"
 	"io/ioutil"
+	"regexp"
 	"strings"
 
 	"gopkg.in/yaml.v2"
@@ -28,7 +29,8 @@ type socket struct {
 	Protocol    string `yaml:"protocol,omitempty"`
 	ProcessName string `yaml:"process,omitempty"`
 
-	Status string `yaml:"status,omitempty"`
+	Status      string `yaml:"status,omitempty"`
+	procPattern *regexp.Regexp
 }
 
 const (
@@ -142,9 +144,6 @@ func (thisSocket *socket) check() error {
 	if thisSocket.SrcHost == "" {
 		thisSocket.SrcHost = thisSocket.Host
 	}
-	if strings.EqualFold(thisSocket.SrcHost, "any") {
-		thisSocket.SrcHost = "0.0.0.0"
-	}
 
 	if thisSocket.SrcPort == 0 {
 		thisSocket.SrcPort = thisSocket.Port
@@ -157,6 +156,15 @@ func (thisSocket *socket) check() error {
 	// Check if the protocol is among the valid ones
 	if IsValidProtocol(thisSocket.Protocol) == false {
 		return (fmt.Errorf("The protocol of the socket is not a valid one"))
+	}
+
+	// if processName pattern is specified, build a regex pattern
+	var err error
+	if thisSocket.ProcessName != "" {
+		thisSocket.procPattern, err = regexp.Compile("^" + thisSocket.ProcessName + "$")
+		if err != nil {
+			return err
+		}
 	}
 	return (nil)
 }

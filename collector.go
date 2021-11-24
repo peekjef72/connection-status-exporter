@@ -18,10 +18,22 @@ import (
 // SocketSetExporter Exporter of the status of connection
 type SocketSetExporter struct {
 	socketStatusMetrics *prometheus.GaugeVec
+	socketCountMetrics  *prometheus.GaugeVec
 	mutex               sync.Mutex
 	sockets             *socketSet
 	logger              log.Logger
 }
+
+const (
+	// Prefix for Prometheus metrics
+	namespace = "connection_status_up"
+
+	// Constant values
+	connectionOk  = 1
+	connectionErr = 0
+)
+
+var SocketSetLabels = []string{"name", "srchost", "srcport", "deshost", "destport", "protocol", "status", "process"}
 
 // NewSocketSetExporter Creator of SocketSetExporter
 func NewSocketSetExporter(sockets *socketSet, logger log.Logger) *SocketSetExporter {
@@ -29,9 +41,14 @@ func NewSocketSetExporter(sockets *socketSet, logger log.Logger) *SocketSetExpor
 	return &SocketSetExporter{
 		socketStatusMetrics: prometheus.NewGaugeVec(
 			prometheus.GaugeOpts{
-				Name: namespace,
-				Help: "Connection status of the socket.",
-			}, []string{"name", "srchost", "srcport", "deshost", "destport", "protocol", "status"}),
+				Name: "connection_status_up",
+				Help: "Connection status of the socket (0 down - 1 up).",
+			}, SocketSetLabels),
+		socketCountMetrics: prometheus.NewGaugeVec(
+			prometheus.GaugeOpts{
+				Name: "connection_status_count",
+				Help: "number of socket with same parameter.",
+			}, SocketSetLabels),
 		sockets: sockets,
 		logger:  logger,
 	}
@@ -49,6 +66,7 @@ func (exporter *SocketSetExporter) Collect(prometheusChannel chan<- prometheus.M
 	defer exporter.mutex.Unlock()
 	exporter.sockets.collect(exporter)
 	exporter.socketStatusMetrics.Collect(prometheusChannel)
+	exporter.socketCountMetrics.Collect(prometheusChannel)
 	return
 }
 
@@ -105,8 +123,8 @@ func (thisSocket *socket) collect(exporter *SocketSetExporter, entries []netstat
 	connectionCount := 0
 
 	for _, entry := range entries {
-		level.Debug(exporter.logger).Log("socket", fmt.Sprintf("%+v", entry))
-		level.Debug(exporter.logger).Log("addr", fmt.Sprintf("%s", entry.LocalAddr.IP.String()))
+		// level.Debug(exporter.logger).Log("socket", fmt.Sprintf("%+v", entry))
+		// level.Debug(exporter.logger).Log("addr", fmt.Sprintf("%s", entry.LocalAddr.IP.String()))
 		if thisSocket.Status == "listen" && entry.State != netstat.Listen {
 			continue
 		}
@@ -151,10 +169,14 @@ func (thisSocket *socket) collect(exporter *SocketSetExporter, entries []netstat
 		if thisSocket.DestPort != 0 && thisSocket.DestPort != entry.RemoteAddr.Port {
 			continue
 		}
+		if thisSocket.ProcessName != "" && !thisSocket.procPattern.MatchString(entry.Process.Name) {
+			continue
+		}
+
 		connectionCount++
 		// break
 	}
-	labels := make([]string, 7)
+	labels := make([]string, len(SocketSetLabels))
 	labels[0] = thisSocket.Name
 	if thisSocket.SrcHost == "" {
 		labels[1] = "*"
@@ -178,22 +200,21 @@ func (thisSocket *socket) collect(exporter *SocketSetExporter, entries []netstat
 	}
 	labels[5] = thisSocket.Protocol
 	labels[6] = thisSocket.Status
+	if thisSocket.ProcessName == "" {
+		labels[7] = "*"
+	} else {
+		labels[7] = thisSocket.ProcessName
+	}
 	level.Debug(exporter.logger).Log("labels:", fmt.Sprintf("%+q", labels))
 
 	// Updated the status of the socket in the metric
 	exporter.socketStatusMetrics.WithLabelValues(labels[:]...).Set(float64(connectionCount))
-	// thisSocket.Name,
-	// thisSocket.Host,
-	// strconv.Itoa(thisSocket.Port),
-	// thisSocket.Protocol
-	// ).Set(float64(connectionStatus))
 
-	// If the socket was open correctly, close it
-	// if connectionStatus == connectionOk {
-	// 	err = connection.Close()
-	// 	if err != nil {
-	// 		level.Info(exporter.logger).Log("Error closing the socket")
-	// 	}
-	// }
+	connectionStatus := 0
+	if connectionCount > 0 {
+		connectionStatus = 1
+	}
+	exporter.socketCountMetrics.WithLabelValues(labels[:]...).Set(float64(connectionStatus))
+
 	return
 }

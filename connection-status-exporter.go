@@ -46,13 +46,7 @@ var Version = "0.1.1"
 var VersionShort = "0.1.1"
 
 const (
-
-	// Prefix for Prometheus metrics
-	namespace = "connection_status_up"
-
 	// Constant values
-	connectionOk          = 1
-	connectionErr         = 0
 	metricsPublishingPort = ":9293"
 )
 
@@ -60,8 +54,7 @@ var (
 	listenAddress = kingpin.Flag("web.listen-address", "The address to listen on for HTTP requests.").Default(metricsPublishingPort).String()
 	metricsPath   = kingpin.Flag("web.telemetry-path", "Path under which to expose collector's internal metrics.").Default("/metrics").String()
 	configFile    = kingpin.Flag("config-file", "Exporter configuration file.").Default("config/config.yaml").String()
-
-//	exportPath       = kingpin.Flag("web.export-path", "Path under which to expose targets' metrics.").Default("/export").String()
+	dry_run       = kingpin.Flag("dry-run", "Only check exporter configuration file and exit.").Default("false").Bool()
 )
 
 //***********************************************************************************************
@@ -100,6 +93,9 @@ func main() {
 			level.Error(logger).Log("Errmsg", "Error loading config", "err", err)
 			os.Exit(1)
 		}
+	}
+	if *dry_run {
+		level.Info(logger).Log("msg", "configuration OK.")
 	}
 	// create a new exporter
 	sockExporter := NewSocketSetExporter(sockets, logger)
